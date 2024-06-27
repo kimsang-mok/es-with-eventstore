@@ -1,4 +1,9 @@
-import { JSONEventData, JSONEventType } from '@eventstore/db-client';
+import {
+  EventType,
+  JSONEventData,
+  JSONEventType,
+  RecordedEvent,
+} from '@eventstore/db-client';
 
 type ProductItem = Readonly<{
   productId: string;
@@ -33,14 +38,14 @@ type ShoppingCartEvent =
   | ProductItemRemovedFromShoppingCart
   | ShoppingCartConfirmed;
 
-type ShoppingCart = Readonly<{
+type ShoppingCart = {
   id: string;
   clientId: string;
   status: ShoppingCartStatus;
   productItems: ProductItem[];
   openedAt: Date;
   confirmedAt?: Date;
-}>;
+};
 
 enum ShoppingCartStatus {
   Opened = 1,
@@ -94,12 +99,21 @@ const getShoppingCart = StreamAggregator<ShoppingCart, ShoppingCartEvent>(
           ),
         };
       case 'product-item-removed-from-shopping-cart':
-        // TODO
-        break;
+        return {
+          ...currentState,
+          productItems: removeProductItem(
+            currentState.productItems,
+            event.data.productItem,
+          ),
+        };
       case 'shopping-cart-confirmed':
-        // TODO
-        break;
+        return {
+          ...currentState,
+          status: ShoppingCartStatus.Confirmed,
+          confirmedAt: new Date(event.data.confirmedAt),
+        };
       default:
+        // eslint-disable-next-line no-case-declarations
         const _: never = event;
         throw new Error('Unknown event type');
     }
@@ -134,4 +148,43 @@ const addProductItem = (
   return productItems.map((item) =>
     item.productId === productId ? mergedProductItem : item,
   );
+};
+
+const removeProductItem = (
+  productItems: ProductItem[],
+  productItemToBeRemoved: ProductItem,
+) => {
+  const { productId, quantity } = productItemToBeRemoved;
+
+  const currentProductItem = assertProductItemExists(
+    productItems,
+    productItemToBeRemoved,
+  );
+
+  const newQuantity = currentProductItem.quantity - quantity;
+
+  if (newQuantity === 0) {
+    return productItems.filter((item) => item.productId !== productId);
+  }
+
+  const mergedProductItem = { productId, quantity: newQuantity };
+
+  return productItems.map((item) =>
+    item.productId === productId ? mergedProductItem : item,
+  );
+};
+
+const assertProductItemExists = (
+  productItems: ProductItem[],
+  productItemToBeRemoved: ProductItem,
+) => {
+  const { productId, quantity } = productItemToBeRemoved;
+
+  const currentProductItem = findProductItem(productItems, productId);
+
+  if (!currentProductItem || currentProductItem.quantity < quantity) {
+    throw new Error('Product not found or insufficient');
+  }
+
+  return currentProductItem;
 };
