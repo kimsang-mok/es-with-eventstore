@@ -1,137 +1,98 @@
-import { JSONEventData, JSONEventType } from '@eventstore/db-client';
+import { v4 as uuid } from 'uuid';
+import {
+  ShoppingCartEvent,
+  getShoppingCart,
+  toShoppingCartStreamName,
+} from './shopping-carts/shoppingCart';
+import { getEventStore } from '#core/streams';
+import { EventStoreDBClient, jsonEvent } from '@eventstore/db-client';
 
-type ProductItem = Readonly<{
-  productId: string;
-  quantity: number;
-}>;
-
-//<---------------events--------------->//
-
-type ShoppingCartOpened = JSONEventType<
-  'shopping-cart-opened',
-  { shoppingCartId: string; clientId: string; openedAt: string }
->;
-
-type ProductItemAddedToShoppingCart = JSONEventType<
-  'product-item-added-to-shopping-cart',
-  { shoppingCartId: string; productItem: ProductItem }
->;
-
-type ProductItemRemovedFromShoppingCart = JSONEventType<
-  'product-item-removed-from-shopping-cart',
-  { shoppingCartId: string; productItem: ProductItem }
->;
-
-type ShoppingCartConfirmed = JSONEventType<
-  'shopping-cart-confirmed',
-  { shoppingCartId: string; confirmedAt: Date }
->;
-
-type ShoppingCartEvent =
-  | ShoppingCartOpened
-  | ProductItemAddedToShoppingCart
-  | ProductItemRemovedFromShoppingCart
-  | ShoppingCartConfirmed;
-
-type ShoppingCart = Readonly<{
-  id: string;
-  clientId: string;
-  status: ShoppingCartStatus;
-  productItems: ProductItem[];
-  openedAt: Date;
-  confirmedAt?: Date;
-}>;
-
-enum ShoppingCartStatus {
-  Opened = 1,
-  Confirmed = 2,
-  Cancelled = 4,
-  Closed = Confirmed | Cancelled,
+enum ProductsId {
+  SHOES = 'air-jordan',
+  SHIRT = 'croc-tshirt',
 }
 
-type ApplyEvent<Entity, Event> = (
-  currentState: Entity | undefined,
-  event: Event,
-) => Entity;
+async function generateEventStream(
+  eventStore: EventStoreDBClient,
+  shoppingCartId: string,
+) {
+  const clientId = 'client-123';
+  const streamName = toShoppingCartStreamName(shoppingCartId);
 
-const StreamAggregator =
-  <Entity, Event>(when: ApplyEvent<Entity, Event>) =>
-  (events: Event[]): Entity => {
-    let currentState: Entity | undefined = undefined;
+  const events: ShoppingCartEvent[] = [
+    {
+      type: 'shopping-cart-opened',
+      data: { shoppingCartId, clientId, openedAt: new Date().toJSON() },
+    },
+    {
+      type: 'product-item-added-to-shopping-cart',
+      data: {
+        shoppingCartId,
+        productItem: {
+          productId: ProductsId.SHIRT,
+          quantity: 1,
+        },
+      },
+    },
+    {
+      type: 'product-item-added-to-shopping-cart',
+      data: {
+        shoppingCartId,
+        productItem: {
+          productId: ProductsId.SHOES,
+          quantity: 3,
+        },
+      },
+    },
+    {
+      type: 'product-item-removed-from-shopping-cart',
+      data: {
+        shoppingCartId,
+        productItem: {
+          productId: ProductsId.SHOES,
+          quantity: 1,
+        },
+      },
+    },
+    {
+      type: 'shopping-cart-confirmed',
+      data: {
+        shoppingCartId,
+        confirmedAt: new Date().toJSON(),
+      },
+    },
+  ];
 
-    for (const event of events) {
-      currentState = when(currentState, event);
-    }
-
-    if (currentState == null) throw new Error('Stream not found');
-
-    return currentState;
-  };
-
-const getShoppingCart = StreamAggregator<ShoppingCart, ShoppingCartEvent>(
-  (currentState, event) => {
-    if (event.type === 'shopping-cart-opened') {
-      if (currentState != null) throw new Error('Cart has already been opened');
-
-      return {
-        id: event.data.shoppingCartId,
-        clientId: event.data.clientId,
-        openedAt: new Date(event.data.openedAt),
-        productItems: [],
-        status: ShoppingCartStatus.Opened,
-      };
-    }
-
-    if (currentState == null) throw new Error('Shopping cart not found');
-
-    switch (event.type) {
-      case 'product-item-added-to-shopping-cart':
-        return {
-          ...currentState,
-          productItems: addProductItem(
-            currentState.productItems,
-            event.data.productItem,
-          ),
-        };
-      case 'product-item-removed-from-shopping-cart':
-        // TODO
-        break;
-      case 'shopping-cart-confirmed':
-        // TODO
-        break;
-      default:
-        const _: never = event;
-        throw new Error('Unknown event type');
-    }
-  },
-);
-
-const findProductItem = (
-  productItems: ProductItem[],
-  productId: string,
-): ProductItem | undefined => {
-  return productItems.find((item) => item.productId === productId);
-};
-
-const addProductItem = (
-  productItems: ProductItem[],
-  newProductItem: ProductItem,
-): ProductItem[] => {
-  const { productId, quantity } = newProductItem;
-
-  /**
-   * check if the item exists
-   * if it does not exist, we simply add the new item
-   * otherwise, we just update the quantity of the item
-   */
-  const currentProductItem = findProductItem(productItems, productId);
-
-  if (!currentProductItem) return [...productItems, newProductItem];
-
-  const newQuantity = currentProductItem.quantity + quantity;
-  const mergedProductItem = { productId, quantity: newQuantity };
-
-  return productItems.map((item) =>
-    item.productId === productId ? mergedProductItem : item,
+  // apend events to a stream
+  await eventStore.appendToStream<ShoppingCartEvent>(
+    streamName,
+    events.map((e) => jsonEvent<ShoppingCartEvent>(e)),
   );
-};
+}
+
+async function projectStream(
+  eventStore: EventStoreDBClient,
+  shoppingCartId: string,
+) {
+  const streamName = toShoppingCartStreamName(shoppingCartId);
+  // read stream
+  const shoppingCartStream =
+    eventStore.readStream<ShoppingCartEvent>(streamName);
+
+  const cart = await getShoppingCart(shoppingCartStream);
+
+  return cart;
+}
+
+async function execute() {
+  const shoppingCartId = `cart-${uuid()}`;
+  const eventStore = getEventStore();
+  await generateEventStream(eventStore, shoppingCartId);
+
+  const result = await projectStream(eventStore, shoppingCartId);
+  return result;
+}
+
+execute()
+  .then((result) => console.log(result))
+  .catch((err) => console.log(err));
