@@ -1,4 +1,5 @@
 import {
+  EventStoreDBClient,
   EventType,
   RecordedEvent,
   ResolvedEvent,
@@ -24,3 +25,16 @@ export const StreamAggregator =
 
     return currentState;
   };
+
+// configure event store db
+let eventStore: EventStoreDBClient;
+
+export const getEventStore = (connectionString?: string) => {
+  if (!eventStore) {
+    eventStore = EventStoreDBClient.connectionString(
+      connectionString ?? 'esdb://localhost:2113?tls=false',
+    );
+  }
+
+  return eventStore;
+};

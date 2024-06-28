@@ -1,5 +1,6 @@
 import { JSONEventType } from '@eventstore/db-client';
-import { ProductItem } from './productItem';
+import { ProductItem, addProductItem, removeProductItem } from './productItem';
+import { StreamAggregator } from '#core/streams';
 
 //<---------------events--------------->//
 
@@ -20,7 +21,7 @@ export type ProductItemRemovedFromShoppingCart = JSONEventType<
 
 export type ShoppingCartConfirmed = JSONEventType<
   'shopping-cart-confirmed',
-  { shoppingCartId: string; confirmedAt: Date }
+  { shoppingCartId: string; confirmedAt: string }
 >;
 
 export type ShoppingCartEvent =
@@ -46,3 +47,56 @@ export enum ShoppingCartStatus {
   Cancelled = 4,
   Closed = Confirmed | Cancelled,
 }
+
+export const toShoppingCartStreamName = (shoppingCartId: string) => {
+  // esdb pattern: we need to specify category which is our entity name
+  return `shopping_cart-${shoppingCartId}`;
+};
+
+export const getShoppingCart = StreamAggregator<
+  ShoppingCart,
+  ShoppingCartEvent
+>((currentState, event) => {
+  if (event.type === 'shopping-cart-opened') {
+    if (currentState != null) throw new Error('Cart has already been opened');
+
+    return {
+      id: event.data.shoppingCartId,
+      clientId: event.data.clientId,
+      openedAt: new Date(event.data.openedAt),
+      productItems: [],
+      status: ShoppingCartStatus.Opened,
+    };
+  }
+
+  if (currentState == null) throw new Error('Shopping cart not found');
+
+  switch (event.type) {
+    case 'product-item-added-to-shopping-cart':
+      return {
+        ...currentState,
+        productItems: addProductItem(
+          currentState.productItems,
+          event.data.productItem,
+        ),
+      };
+    case 'product-item-removed-from-shopping-cart':
+      return {
+        ...currentState,
+        productItems: removeProductItem(
+          currentState.productItems,
+          event.data.productItem,
+        ),
+      };
+    case 'shopping-cart-confirmed':
+      return {
+        ...currentState,
+        status: ShoppingCartStatus.Confirmed,
+        confirmedAt: new Date(event.data.confirmedAt),
+      };
+    default:
+      // eslint-disable-next-line no-case-declarations
+      const _: never = event;
+      throw new Error('Unknown event type');
+  }
+});
